@@ -169,7 +169,7 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 		return err
 	}
 
-	if err := u.clientAuthenticate(config); err != nil {
+	if err := u.clientAuthenticateReturnAllowed(config); err != nil {
 		if p.config.UpstreamAuthFailureCallback != nil {
 			p.config.UpstreamAuthFailureCallback(downstream, method, err, p.challengeCtx)
 		}
@@ -455,4 +455,97 @@ func (c *connection) serverHandshakeNoAuth(config *ServerConfig) (*Permissions, 
 	}
 
 	return nil, nil
+}
+
+type NoMoreMethodsErr struct {
+	Tried   []string
+	Allowed []string
+}
+
+func (e NoMoreMethodsErr) Error() string {
+	return fmt.Sprintf("ssh: unable to authenticate, attempted methods %v, no supported methods remain, allowed methods %v", e.Tried, e.Allowed)
+}
+
+func (c *connection) clientAuthenticateReturnAllowed(config *ClientConfig) error {
+	// initiate user auth session
+	if err := c.transport.writePacket(Marshal(&serviceRequestMsg{serviceUserAuth})); err != nil {
+		return err
+	}
+	packet, err := c.transport.readPacket()
+	if err != nil {
+		return err
+	}
+	// The server may choose to send a SSH_MSG_EXT_INFO at this point (if we
+	// advertised willingness to receive one, which we always do) or not. See
+	// RFC 8308, Section 2.4.
+	extensions := make(map[string][]byte)
+	if len(packet) > 0 && packet[0] == msgExtInfo {
+		var extInfo extInfoMsg
+		if err := Unmarshal(packet, &extInfo); err != nil {
+			return err
+		}
+		payload := extInfo.Payload
+		for i := uint32(0); i < extInfo.NumExtensions; i++ {
+			name, rest, ok := parseString(payload)
+			if !ok {
+				return parseError(msgExtInfo)
+			}
+			value, rest, ok := parseString(rest)
+			if !ok {
+				return parseError(msgExtInfo)
+			}
+			extensions[string(name)] = value
+			payload = rest
+		}
+		packet, err = c.transport.readPacket()
+		if err != nil {
+			return err
+		}
+	}
+	var serviceAccept serviceAcceptMsg
+	if err := Unmarshal(packet, &serviceAccept); err != nil {
+		return err
+	}
+
+	// during the authentication phase the client first attempts the "none" method
+	// then any untried methods suggested by the server.
+	var tried []string
+	var lastMethods []string
+
+	sessionID := c.transport.getSessionID()
+	for auth := AuthMethod(new(noneAuth)); auth != nil; {
+		ok, methods, err := auth.auth(sessionID, config.User, c.transport, config.Rand, extensions)
+		if err != nil {
+			return err
+		}
+		if ok == authSuccess {
+			// success
+			return nil
+		} else if ok == authFailure {
+			if m := auth.method(); !contains(tried, m) {
+				tried = append(tried, m)
+			}
+		}
+		if methods == nil {
+			methods = lastMethods
+		}
+		lastMethods = methods
+
+		auth = nil
+
+	findNext:
+		for _, a := range config.Auth {
+			candidateMethod := a.method()
+			if contains(tried, candidateMethod) {
+				continue
+			}
+			for _, meth := range methods {
+				if meth == candidateMethod {
+					auth = a
+					break findNext
+				}
+			}
+		}
+	}
+	return NoMoreMethodsErr{Tried: tried, Allowed: lastMethods}
 }
