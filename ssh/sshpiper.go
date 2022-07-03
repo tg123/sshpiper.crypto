@@ -154,6 +154,11 @@ func (p *PiperConn) mapToUpstreamViaDownstreamAuth() error {
 }
 
 func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstream *Upstream) error {
+	if upstream == nil {
+		p.updateAuthMethods()
+		return fmt.Errorf("empty upstream") // here mean ignore this auth method, and the authmedthod may write something to chanllage context
+	}
+
 	if upstream.User == "" {
 		upstream.User = downstream.User()
 	}
@@ -236,6 +241,11 @@ func (p *PiperConn) updateAuthMethods() error {
 			return err
 		}
 	}
+
+	p.authOnlyConfig.NonAuthCallback = nil
+	p.authOnlyConfig.PasswordCallback = nil
+	p.authOnlyConfig.PublicKeyCallback = nil
+	p.authOnlyConfig.KeyboardInteractiveCallback = nil
 
 	for _, authMethod := range authMethods {
 		switch authMethod {
