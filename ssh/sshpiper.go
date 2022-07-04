@@ -165,9 +165,6 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 
 	config := &upstream.ClientConfig
 	addr := upstream.Address
-	if addr == "" {
-		addr = downstream.RemoteAddr().String()
-	}
 
 	u, err := newUpstream(upstream.Conn, addr, config)
 	if err != nil {
