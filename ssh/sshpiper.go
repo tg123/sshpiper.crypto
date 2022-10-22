@@ -34,9 +34,9 @@ type PiperConfig struct {
 
 	NextAuthMethods func(conn ConnMetadata, challengeCtx ChallengeContext) ([]string, error)
 
-	// NoneAuthCallback, if non-nil, is called when downstream requests a none auth,
+	// NoClientAuthCallback, if non-nil, is called when downstream requests a none auth,
 	// typically the first auth msg from client to see what auth methods can be used..
-	NoneAuthCallback func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error)
+	NoClientAuthCallback func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error)
 
 	// PublicKeyCallback, if non-nil, is called when downstream requests a password auth.
 	PasswordCallback func(conn ConnMetadata, password []byte, challengeCtx ChallengeContext) (*Upstream, error)
@@ -185,8 +185,8 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	return nil
 }
 
-func (p *PiperConn) noneAuthCallback(conn ConnMetadata) (*Permissions, error) {
-	u, err := p.config.NoneAuthCallback(conn, p.challengeCtx)
+func (p *PiperConn) noClientAuthCallback(conn ConnMetadata) (*Permissions, error) {
+	u, err := p.config.NoClientAuthCallback(conn, p.challengeCtx)
 	if err != nil {
 		p.updateAuthMethods()
 		return nil, err
@@ -239,7 +239,7 @@ func (p *PiperConn) updateAuthMethods() error {
 		}
 	}
 
-	p.authOnlyConfig.NonAuthCallback = nil
+	p.authOnlyConfig.NoClientAuthCallback = nil
 	p.authOnlyConfig.PasswordCallback = nil
 	p.authOnlyConfig.PublicKeyCallback = nil
 	p.authOnlyConfig.KeyboardInteractiveCallback = nil
@@ -247,8 +247,9 @@ func (p *PiperConn) updateAuthMethods() error {
 	for _, authMethod := range authMethods {
 		switch authMethod {
 		case "none":
-			if p.config.NoneAuthCallback != nil {
-				p.authOnlyConfig.NonAuthCallback = p.noneAuthCallback
+			if p.config.NoClientAuthCallback != nil {
+				p.authOnlyConfig.NoClientAuthCallback = p.noClientAuthCallback
+				p.authOnlyConfig.NoClientAuth = true
 			}
 		case "password":
 			if p.config.PasswordCallback != nil {
