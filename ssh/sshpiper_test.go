@@ -531,7 +531,7 @@ func TestPiperUsernameNotChangedWithinSession(t *testing.T) {
 			challengeCtx.(authlistCtx)[method] = false
 		},
 
-		NoneAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
+		NoClientAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
 			s, err := dailDummyServer()
 			return &Upstream{
 				Conn: s,
@@ -719,7 +719,7 @@ func TestPiperConnMeta(t *testing.T) {
 	wait := make(chan int)
 
 	c, err := dialPiper(&PiperConfig{
-		NoneAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
+		NoClientAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
 			s, err := dialUpstream(simpleEchoHandler, &ServerConfig{NoClientAuth: true}, t)
 			return &Upstream{
 				Conn: s,
@@ -757,7 +757,7 @@ func TestPiperConnMeta(t *testing.T) {
 
 func TestPiperConnMsgHook(t *testing.T) {
 	c, err := dialPiper(&PiperConfig{
-		NoneAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
+		NoClientAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
 			s, err := dialUpstream(simpleEchoHandler, &ServerConfig{NoClientAuth: true}, t)
 			return &Upstream{
 				Conn: s,
@@ -850,7 +850,7 @@ func TestPiperConnMsgHook(t *testing.T) {
 func TestPiperPipeData(t *testing.T) {
 
 	c, err := dialPiper(&PiperConfig{
-		NoneAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
+		NoClientAuthCallback: func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error) {
 			s, err := dialUpstream(simpleEchoHandler, &ServerConfig{NoClientAuth: true}, t)
 			return &Upstream{
 				Conn: s,
