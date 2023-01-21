@@ -335,6 +335,10 @@ func pipingWithHook(dst, src packetConn, hook func(msg []byte) ([]byte, error)) 
 			return err
 		}
 
+		if p == nil {
+			continue
+		}
+
 		err = dst.writePacket(p)
 		if err != nil {
 			return err
