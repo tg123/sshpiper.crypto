@@ -141,6 +141,11 @@ func (p *PiperConn) DownstreamConnMeta() ConnMetadata {
 	return p.downstream
 }
 
+// ChallengeContext returns the ChallengeContext of the piper
+func (p *PiperConn) ChallengeContext() ChallengeContext {
+	return p.challengeCtx
+}
+
 func (p *PiperConn) mapToUpstreamViaDownstreamAuth() error {
 	if err := p.updateAuthMethods(); err != nil {
 		return err
