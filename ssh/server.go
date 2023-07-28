@@ -651,7 +651,9 @@ userAuthLoop:
 			authErr = fmt.Errorf("ssh: unknown method %q", userAuthReq.Method)
 		}
 
+		// send disconnect message when got networke error
 		if _, ok := authErr.(*net.OpError); ok {
+			// See RFC 4253, section 11.1.
 			if err := s.transport.writePacket(Marshal(&disconnectMsg{
 				Reason:  7,
 				Message: authErr.Error(),
