@@ -652,7 +652,7 @@ userAuthLoop:
 		}
 
 		// send disconnect message when got network error
-		if _, ok := authErr.(*net.OpError); ok {
+		if _, ok := authErr.(net.Error); ok {
 			// See RFC 4253, section 11.1.
 			if err := s.transport.writePacket(Marshal(&disconnectMsg{
 				Reason:  7,
