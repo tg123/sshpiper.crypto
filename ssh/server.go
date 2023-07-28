@@ -651,6 +651,15 @@ userAuthLoop:
 			authErr = fmt.Errorf("ssh: unknown method %q", userAuthReq.Method)
 		}
 
+		if _, ok := authErr.(*net.OpError); ok {
+			if err := s.transport.writePacket(Marshal(&disconnectMsg{
+				Reason:  7,
+				Message: authErr.Error(),
+			})); err != nil {
+				return nil, err
+			}
+		}
+
 		authErrs = append(authErrs, authErr)
 
 		if config.AuthLogCallback != nil {
