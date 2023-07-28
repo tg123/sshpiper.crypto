@@ -660,6 +660,7 @@ userAuthLoop:
 			})); err != nil {
 				return nil, err
 			}
+			return nil, authErr
 		}
 
 		authErrs = append(authErrs, authErr)
