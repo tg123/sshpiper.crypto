@@ -25,38 +25,50 @@ type ChallengeContext interface {
 }
 
 // PiperConfig holds SSHPiper specific configuration data.
+// PiperConfig represents the configuration for the SSH piper.
 type PiperConfig struct {
 	Config
 
+	// PublicKeyAuthAlgorithms specifies the supported client public key
+	// authentication algorithms. Note that this should not include certificate
+	// types since those use the underlying algorithm. This list is sent to the
+	// client if it supports the server-sig-algs extension. Order is irrelevant.
+	// If unspecified then a default set of algorithms is used.
+	PublicKeyAuthAlgorithms []string
+
 	hostKeys []Signer
 
+	// CreateChallengeContext, if non-nil, that creates a challenge context for the connection metadata.
 	CreateChallengeContext func(conn ConnMetadata) (ChallengeContext, error)
 
+	// NextAuthMethods, if non-nil, that returns the next authentication methods to be used.
 	NextAuthMethods func(conn ConnMetadata, challengeCtx ChallengeContext) ([]string, error)
 
-	// NoClientAuthCallback, if non-nil, is called when downstream requests a none auth,
-	// typically the first auth msg from client to see what auth methods can be used..
+	// NoClientAuthCallback, if non-nil, that is called when the downstream requests a none auth.
 	NoClientAuthCallback func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error)
 
-	// PublicKeyCallback, if non-nil, is called when downstream requests a password auth.
+	// PasswordCallback, if non-nil, that is called when the downstream requests a password auth.
+	// It returns the upstream connection and an error.
 	PasswordCallback func(conn ConnMetadata, password []byte, challengeCtx ChallengeContext) (*Upstream, error)
 
-	// PublicKeyCallback, if non-nil, is called when downstream requests a publickey auth.
+	// PublicKeyCallback, if non-nil, that is called when the downstream requests a publickey auth.
+	// It returns the upstream connection and an error.
 	PublicKeyCallback func(conn ConnMetadata, key PublicKey, challengeCtx ChallengeContext) (*Upstream, error)
 
+	// KeyboardInteractiveCallback, if non-nil, that is called when the downstream requests a keyboard interactive auth.
+	// It returns the upstream connection and an error.
 	KeyboardInteractiveCallback func(conn ConnMetadata, client KeyboardInteractiveChallenge, challengeCtx ChallengeContext) (*Upstream, error)
 
+	// UpstreamAuthFailureCallback, if non-nil, that is called when the upstream authentication fails.
 	UpstreamAuthFailureCallback func(conn ConnMetadata, method string, err error, challengeCtx ChallengeContext)
 
-	// ServerVersion is the version identification string to announce in
-	// the public handshake.
+	// ServerVersion is the version identification string to announce in the public handshake.
 	// If empty, a reasonable default is used.
-	// Note that RFC 4253 section 4.2 requires that this string start with
-	// "SSH-2.0-".
+	// Note that RFC 4253 section 4.2 requires that this string start with "SSH-2.0-".
 	ServerVersion string
 
-	// BannerCallback, if present, is called and the return string is sent to
-	// the client after key exchange completed but before authentication.
+	// BannerCallback, if non-nil, that is called after key exchange completed but before authentication.
+	// It returns the banner string to be sent to the client.
 	BannerCallback func(conn ConnMetadata, challengeCtx ChallengeContext) string
 }
 
@@ -279,9 +291,10 @@ func (p *PiperConn) updateAuthMethods() error {
 // If either handshake is unsuccessful, the whole piped connection will be closed.
 func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 	d, err := newDownstream(conn, &ServerConfig{
-		Config:        config.Config,
-		hostKeys:      config.hostKeys,
-		ServerVersion: config.ServerVersion,
+		Config:                  config.Config,
+		hostKeys:                config.hostKeys,
+		ServerVersion:           config.ServerVersion,
+		PublicKeyAuthAlgorithms: config.PublicKeyAuthAlgorithms,
 	})
 	if err != nil {
 		return nil, err
@@ -291,7 +304,8 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 		downstream: d,
 		config:     config,
 		authOnlyConfig: &ServerConfig{
-			MaxAuthTries: -1,
+			MaxAuthTries:            -1,
+			PublicKeyAuthAlgorithms: supportedPubKeyAuthAlgos,
 		},
 	}
 
@@ -363,6 +377,15 @@ func newDownstream(c net.Conn, config *ServerConfig) (*downstream, error) {
 	fullConf := *config
 	fullConf.SetDefaults()
 
+	if len(fullConf.PublicKeyAuthAlgorithms) == 0 {
+		fullConf.PublicKeyAuthAlgorithms = supportedPubKeyAuthAlgos
+	} else {
+		for _, algo := range fullConf.PublicKeyAuthAlgorithms {
+			if !contains(supportedPubKeyAuthAlgos, algo) {
+				return nil, fmt.Errorf("ssh: unsupported public key authentication algorithm %s", algo)
+			}
+		}
+	}
 	// Check if the config contains any unsupported key exchanges
 	for _, kex := range fullConf.KeyExchanges {
 		if _, ok := serverForbiddenKexAlgos[kex]; ok {
