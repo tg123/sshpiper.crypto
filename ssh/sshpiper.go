@@ -159,8 +159,11 @@ func (p *PiperConn) ChallengeContext() ChallengeContext {
 }
 
 func (p *PiperConn) mapToUpstreamViaDownstreamAuth() error {
-	if err := p.updateAuthMethods(); err != nil {
-		return err
+	if err := p.updateAuthMethods(fmt.Errorf("no more auth methods")); err != nil {
+		_, ok := err.(*PartialSuccessError)
+		if !ok {
+			return err
+		}
 	}
 
 	if _, err := p.downstream.serverAuthenticate(p.authOnlyConfig); err != nil {
@@ -172,8 +175,7 @@ func (p *PiperConn) mapToUpstreamViaDownstreamAuth() error {
 
 func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstream *Upstream) error {
 	if upstream == nil {
-		p.updateAuthMethods()
-		return fmt.Errorf("empty upstream") // here mean ignore this auth method, and the authmedthod may write something to chanllage context
+		return p.updateAuthMethods(fmt.Errorf("empty upstream"))
 	}
 
 	if upstream.User == "" {
@@ -192,8 +194,8 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 		if p.config.UpstreamAuthFailureCallback != nil {
 			p.config.UpstreamAuthFailureCallback(downstream, method, err, p.challengeCtx)
 		}
-		p.updateAuthMethods()
-		return err
+		
+		return p.updateAuthMethods(err)
 	}
 
 	u.user = config.User
@@ -205,8 +207,7 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 func (p *PiperConn) noClientAuthCallback(conn ConnMetadata) (*Permissions, error) {
 	u, err := p.config.NoClientAuthCallback(conn, p.challengeCtx)
 	if err != nil {
-		p.updateAuthMethods()
-		return nil, err
+		return nil, p.updateAuthMethods(err)
 	}
 
 	return nil, p.authUpstream(conn, "none", u)
@@ -215,8 +216,7 @@ func (p *PiperConn) noClientAuthCallback(conn ConnMetadata) (*Permissions, error
 func (p *PiperConn) passwordCallback(conn ConnMetadata, password []byte) (*Permissions, error) {
 	u, err := p.config.PasswordCallback(conn, password, p.challengeCtx)
 	if err != nil {
-		p.updateAuthMethods()
-		return nil, err
+		return nil, p.updateAuthMethods(err)
 	}
 
 	return nil, p.authUpstream(conn, "password", u)
@@ -225,8 +225,7 @@ func (p *PiperConn) passwordCallback(conn ConnMetadata, password []byte) (*Permi
 func (p *PiperConn) publicKeyCallback(conn ConnMetadata, key PublicKey) (*Permissions, error) {
 	u, err := p.config.PublicKeyCallback(conn, key, p.challengeCtx)
 	if err != nil {
-		p.updateAuthMethods()
-		return nil, err
+		return nil, p.updateAuthMethods(err)
 	}
 
 	return nil, p.authUpstream(conn, "publickey", u)
@@ -235,8 +234,7 @@ func (p *PiperConn) publicKeyCallback(conn ConnMetadata, key PublicKey) (*Permis
 func (p *PiperConn) keyboardInteractiveCallback(conn ConnMetadata, client KeyboardInteractiveChallenge) (*Permissions, error) {
 	u, err := p.config.KeyboardInteractiveCallback(conn, client, p.challengeCtx)
 	if err != nil {
-		p.updateAuthMethods()
-		return nil, err
+		return nil, p.updateAuthMethods(err)
 	}
 
 	return nil, p.authUpstream(conn, "keyboard-interactive", u)
@@ -246,7 +244,7 @@ func (p *PiperConn) bannerCallback(conn ConnMetadata) string {
 	return p.config.BannerCallback(conn, p.challengeCtx)
 }
 
-func (p *PiperConn) updateAuthMethods() error {
+func (p *PiperConn) updateAuthMethods(emptyerr error) error {
 	authMethods := []string{"none", "password", "publickey", "keyboard-interactive"}
 	if p.config.NextAuthMethods != nil {
 		var err error
@@ -283,7 +281,17 @@ func (p *PiperConn) updateAuthMethods() error {
 		}
 	}
 
-	return nil
+	if len(authMethods) > 0 {
+		return &PartialSuccessError{
+			Next: ServerAuthCallbacks{
+				PasswordCallback:            p.authOnlyConfig.PasswordCallback,
+				PublicKeyCallback:           p.authOnlyConfig.PublicKeyCallback,
+				KeyboardInteractiveCallback: p.authOnlyConfig.KeyboardInteractiveCallback,
+			},
+		}
+	}
+
+	return emptyerr
 }
 
 // NewSSHPiperConn starts a piped ssh connection witch conn as its downstream transport.
