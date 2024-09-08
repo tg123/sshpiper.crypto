@@ -36,6 +36,12 @@ type PiperConfig struct {
 	// If unspecified then a default set of algorithms is used.
 	PublicKeyAuthAlgorithms []string
 
+	// MaxAuthTries specifies the maximum number of authentication attempts
+	// permitted per connection. If set to a negative number, the number of
+	// attempts are unlimited. If set to zero, the number of attempts are limited
+	// to 6.
+	MaxAuthTries int
+
 	hostKeys []Signer
 
 	// CreateChallengeContext, if non-nil, that creates a challenge context for the connection metadata.
@@ -100,6 +106,9 @@ type PiperConn struct {
 	config         *PiperConfig
 	authOnlyConfig *ServerConfig
 	challengeCtx   ChallengeContext
+
+	maxAuthTries int
+	authFailures int
 }
 
 // Wait blocks until the piped connection has shut down, and returns the
@@ -194,7 +203,9 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 		if p.config.UpstreamAuthFailureCallback != nil {
 			p.config.UpstreamAuthFailureCallback(downstream, method, err, p.challengeCtx)
 		}
-		
+
+		p.authFailures++
+
 		return p.updateAuthMethods(err)
 	}
 
@@ -207,6 +218,7 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 func (p *PiperConn) noClientAuthCallback(conn ConnMetadata) (*Permissions, error) {
 	u, err := p.config.NoClientAuthCallback(conn, p.challengeCtx)
 	if err != nil {
+		p.authFailures++
 		return nil, p.updateAuthMethods(err)
 	}
 
@@ -216,6 +228,7 @@ func (p *PiperConn) noClientAuthCallback(conn ConnMetadata) (*Permissions, error
 func (p *PiperConn) passwordCallback(conn ConnMetadata, password []byte) (*Permissions, error) {
 	u, err := p.config.PasswordCallback(conn, password, p.challengeCtx)
 	if err != nil {
+		p.authFailures++
 		return nil, p.updateAuthMethods(err)
 	}
 
@@ -225,6 +238,7 @@ func (p *PiperConn) passwordCallback(conn ConnMetadata, password []byte) (*Permi
 func (p *PiperConn) publicKeyCallback(conn ConnMetadata, key PublicKey) (*Permissions, error) {
 	u, err := p.config.PublicKeyCallback(conn, key, p.challengeCtx)
 	if err != nil {
+		p.authFailures++
 		return nil, p.updateAuthMethods(err)
 	}
 
@@ -234,6 +248,7 @@ func (p *PiperConn) publicKeyCallback(conn ConnMetadata, key PublicKey) (*Permis
 func (p *PiperConn) keyboardInteractiveCallback(conn ConnMetadata, client KeyboardInteractiveChallenge) (*Permissions, error) {
 	u, err := p.config.KeyboardInteractiveCallback(conn, client, p.challengeCtx)
 	if err != nil {
+		p.authFailures++
 		return nil, p.updateAuthMethods(err)
 	}
 
@@ -245,6 +260,11 @@ func (p *PiperConn) bannerCallback(conn ConnMetadata) string {
 }
 
 func (p *PiperConn) updateAuthMethods(emptyerr error) error {
+
+	if p.authFailures > p.maxAuthTries && p.maxAuthTries >= 0 {
+		return emptyerr
+	}
+
 	authMethods := []string{"none", "password", "publickey", "keyboard-interactive"}
 	if p.config.NextAuthMethods != nil {
 		var err error
@@ -315,6 +335,11 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 			MaxAuthTries:            -1,
 			PublicKeyAuthAlgorithms: supportedPubKeyAuthAlgos,
 		},
+		authFailures: 0,
+	}
+
+	if config.MaxAuthTries == 0 {
+		p.maxAuthTries = 6
 	}
 
 	if config.CreateChallengeContext != nil {
