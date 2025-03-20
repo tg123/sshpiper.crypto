@@ -194,6 +194,17 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	config := &upstream.ClientConfig
 	addr := upstream.Address
 
+	origBannerCallback := config.BannerCallback
+	config.BannerCallback = func(message string) error {
+		if origBannerCallback != nil {
+			if err := origBannerCallback(message); err != nil {
+				return err
+			}
+		}
+
+		return p.downstream.SendAuthBanner(message)
+	}
+
 	u, err := newUpstream(upstream.Conn, addr, config)
 	if err != nil {
 		return err
