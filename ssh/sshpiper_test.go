@@ -768,7 +768,7 @@ func TestPiperConnMsgHook(t *testing.T) {
 		},
 	}, nil, func(p *PiperConn) {
 
-		p.WaitWithHook(func(msg []byte) ([]byte, error) {
+		p.WaitWithHook(func(msg []byte) (PipePacketHookMethod, []byte, error) {
 			if msg[0] == msgChannelData {
 				m := channelDataMsg{}
 				Unmarshal(msg, &m)
@@ -779,11 +779,11 @@ func TestPiperConnMsgHook(t *testing.T) {
 				m.Length = 7
 				m.Rest = []byte("abcdefg")
 
-				return Marshal(m), nil
+				return PipePacketHookTransform, Marshal(m), nil
 			}
 
-			return msg, nil
-		}, func(msg []byte) ([]byte, error) {
+			return PipePacketHookTransform, msg, nil
+		}, func(msg []byte) (PipePacketHookMethod, []byte, error) {
 			if msg[0] == msgChannelData {
 				m := channelDataMsg{}
 				Unmarshal(msg, &m)
@@ -794,12 +794,16 @@ func TestPiperConnMsgHook(t *testing.T) {
 				m.Length = 3
 				m.Rest = []byte("654")
 
-				return Marshal(m), nil
+				return PipePacketHookTransform, Marshal(m), nil
 			}
 
-			return msg, nil
+			return PipePacketHookTransform, msg, nil
 		})
 	}, t)
+
+	if err != nil {
+		t.Fatalf("connect dial to piper: %v", err)
+	}
 
 	sshc, chans, reqs, err := NewClientConn(c, "", &ClientConfig{
 		User:            "test",
