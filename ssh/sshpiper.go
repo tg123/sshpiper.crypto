@@ -18,9 +18,17 @@ type Upstream struct {
 	ClientConfig
 }
 
+// ChallengeContext represents the context for an authentication challenge.
+// It provides methods to retrieve metadata and the username being challenged.
 type ChallengeContext interface {
+
+	// Meta returns the metadata associated with the challenge.
+	// This can be used to store and retrieve additional information
+	// related to the authentication process.
+	//
 	Meta() interface{}
 
+	// ChallengedUsername returns the username challenged.
 	ChallengedUsername() string
 }
 
@@ -76,6 +84,12 @@ type PiperConfig struct {
 	// BannerCallback, if non-nil, that is called after key exchange completed but before authentication.
 	// It returns the banner string to be sent to the client.
 	BannerCallback func(conn ConnMetadata, challengeCtx ChallengeContext) string
+
+	// PreAuthConnCallback, if non-nil, is called upon receiving a new connection
+	// before any authentication has started. The provided ServerPreAuthConn
+	// can be used at any time before authentication is complete, including
+	// after this callback has returned.
+	PreAuthConnCallback func(ServerPreAuthConn)
 }
 
 // AddHostKey adds a private key as a SSHPiper host key. If an existing host
@@ -117,7 +131,80 @@ func (p *PiperConn) Wait() error {
 	return p.WaitWithHook(nil, nil)
 }
 
-func (p *PiperConn) WaitWithHook(uphook, downhook func(msg []byte) ([]byte, error)) error {
+// PipePacketHookMethod defines how the hook should handle the packet.
+type PipePacketHookMethod int
+
+const (
+	// PipePacketHookTransform means the hook return transformed packet
+	// to the original packet.
+	// The original packet will be ignored and not sent to the other side.
+	// The transformed packet will be sent to the other side.
+	PipePacketHookTransform PipePacketHookMethod = iota
+
+	// PipePacketHookReply means the hook return a reply packet
+	// to the original packet.
+	// The original packet will be ignored and not sent to the other side.
+	// The reply packet will be sent to the other side.
+	PipePacketHookReply
+)
+
+// PipePacketHook is a hook function that is called when a packet is received
+// from the upstream or downstream connection. It allows you to modify the
+// packet before it is sent to the other side.
+// The hook function should return the method to be used and the modified
+// packet. The method can be one of the following:
+//   - PipePacketHookTransform: the packet is transformed and sent to the
+//     other side.
+//   - PipePacketHookReply: the packet is a reply to the original packet
+//     and should be sent to the other side.
+//
+// If the hook function returns an error, the piped connection will be closed
+// and the error will be returned to the caller.
+// If the hook function returns nil, the packet will be dropped
+type PipePacketHook func(msg []byte) (PipePacketHookMethod, []byte, error)
+
+// PingPacketReply is a PipePacketHook that replies to ping@openssh packets
+// with a pong packet.
+// This is useful when upstream does not support ping@openssh
+// sshpiper will reply instead of crashing upstream
+func PingPacketReply(packet []byte) (PipePacketHookMethod, []byte, error) {
+	if packet[0] == msgPing {
+		var msg pingMsg
+		if err := Unmarshal(packet, &msg); err != nil {
+			return PipePacketHookTransform, nil, fmt.Errorf("failed to unmarshal ping@openssh.com message: %w", err)
+		}
+
+		return PipePacketHookReply, Marshal(pongMsg(msg)), nil
+	}
+	return PipePacketHookTransform, packet, nil
+}
+
+// InspectPacketHook is a PipePacketHook that inspects the packet and
+// inspect func should not modify the packet.
+func InspectPacketHook(inspect func(msg []byte) error) PipePacketHook {
+	if inspect == nil {
+		return nil
+	}
+
+	return func(msg []byte) (PipePacketHookMethod, []byte, error) {
+		if err := inspect(msg); err != nil {
+			return PipePacketHookTransform, nil, err
+		}
+
+		return PipePacketHookTransform, msg, nil
+	}
+}
+
+// WaitWithHook blocks until the piped connection has shut down, and returns the
+// error causing the shutdown. It also allows you to specify hooks for
+// upstream and downstream data. The hooks are called with the data read from
+// the connection, and should return the data to be written to the connection.
+//
+// uphook is called with the data read from the upstream connection before sending to
+// downstream
+// downhook is called with the data read from the downstream connection before sending to
+// upstream
+func (p *PiperConn) WaitWithHook(uphook, downhook PipePacketHook) error {
 	c := make(chan error, 2)
 
 	if downhook != nil {
@@ -365,6 +452,10 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 		p.authOnlyConfig.BannerCallback = p.bannerCallback
 	}
 
+	if config.PreAuthConnCallback != nil {
+		p.authOnlyConfig.PreAuthConnCallback = config.PreAuthConnCallback
+	}
+
 	if err := p.mapToUpstreamViaDownstreamAuth(); err != nil {
 		return nil, err
 	}
@@ -386,29 +477,41 @@ func piping(dst, src packetConn) error {
 	}
 }
 
-func pipingWithHook(dst, src packetConn, hook func(msg []byte) ([]byte, error)) error {
+func pipingWithHook(dst, src packetConn, hook PipePacketHook) error {
 	for {
-		p, err := src.readPacket()
+		original, err := src.readPacket()
 		if err != nil {
 			return err
 		}
 
-		p, err = hook(p)
+		method, hooked, err := hook(original)
 		if err != nil {
 			return err
 		}
 
-		if p == nil {
+		if hooked == nil {
 			continue
 		}
 
-		err = dst.writePacket(p)
-		if err != nil {
-			return err
+		switch method {
+		case PipePacketHookTransform:
+			err = dst.writePacket(hooked)
+			if err != nil {
+				return err
+			}
+		case PipePacketHookReply:
+			if err := src.writePacket(hooked); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown hook method: %d", method)
 		}
 	}
 }
 
+// NoneAuth returns an AuthMethod that represents "none" authentication.
+// This method is typically used to indicate that no authentication is required
+// or to test if the server allows unauthenticated access.
 func NoneAuth() AuthMethod {
 	return new(noneAuth)
 }
