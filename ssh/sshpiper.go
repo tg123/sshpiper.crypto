@@ -50,46 +50,44 @@ type PiperConfig struct {
 	// to 6.
 	MaxAuthTries int
 
-	hostKeys []Signer
-
-	// CreateChallengeContext, if non-nil, that creates a challenge context for the connection metadata.
-	CreateChallengeContext func(conn ConnMetadata) (ChallengeContext, error)
-
-	// NextAuthMethods, if non-nil, that returns the next authentication methods to be used.
-	NextAuthMethods func(conn ConnMetadata, challengeCtx ChallengeContext) ([]string, error)
-
-	// NoClientAuthCallback, if non-nil, that is called when the downstream requests a none auth.
-	NoClientAuthCallback func(conn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error)
-
-	// PasswordCallback, if non-nil, that is called when the downstream requests a password auth.
-	// It returns the upstream connection and an error.
-	PasswordCallback func(conn ConnMetadata, password []byte, challengeCtx ChallengeContext) (*Upstream, error)
-
-	// PublicKeyCallback, if non-nil, that is called when the downstream requests a publickey auth.
-	// It returns the upstream connection and an error.
-	PublicKeyCallback func(conn ConnMetadata, key PublicKey, challengeCtx ChallengeContext) (*Upstream, error)
-
-	// KeyboardInteractiveCallback, if non-nil, that is called when the downstream requests a keyboard interactive auth.
-	// It returns the upstream connection and an error.
-	KeyboardInteractiveCallback func(conn ConnMetadata, client KeyboardInteractiveChallenge, challengeCtx ChallengeContext) (*Upstream, error)
-
-	// UpstreamAuthFailureCallback, if non-nil, that is called when the upstream authentication fails.
-	UpstreamAuthFailureCallback func(conn ConnMetadata, method string, err error, challengeCtx ChallengeContext)
-
 	// ServerVersion is the version identification string to announce in the public handshake.
 	// If empty, a reasonable default is used.
 	// Note that RFC 4253 section 4.2 requires that this string start with "SSH-2.0-".
 	ServerVersion string
 
-	// BannerCallback, if non-nil, that is called after key exchange completed but before authentication.
-	// It returns the banner string to be sent to the client.
-	BannerCallback func(conn ConnMetadata, challengeCtx ChallengeContext) string
+	hostKeys []Signer
 
-	// PreAuthConnCallback, if non-nil, is called upon receiving a new connection
-	// before any authentication has started. The provided ServerPreAuthConn
-	// can be used at any time before authentication is complete, including
-	// after this callback has returned.
-	PreAuthConnCallback func(ServerPreAuthConn)
+	// CreateChallengeContext, if non-nil, that creates a challenge context for the connection metadata.
+	CreateChallengeContext func(downconn ServerPreAuthConn) (ChallengeContext, error)
+
+	// NextAuthMethods, if non-nil, that returns the next authentication methods to be used.
+	NextAuthMethods func(downconn ConnMetadata, challengeCtx ChallengeContext) ([]string, error)
+
+	// NoClientAuthCallback, if non-nil, that is called when the downstream requests a none auth.
+	NoClientAuthCallback func(downconn ConnMetadata, challengeCtx ChallengeContext) (*Upstream, error)
+
+	// PasswordCallback, if non-nil, that is called when the downstream requests a password auth.
+	// It returns the upstream connection and an error.
+	PasswordCallback func(downconn ConnMetadata, password []byte, challengeCtx ChallengeContext) (*Upstream, error)
+
+	// PublicKeyCallback, if non-nil, that is called when the downstream requests a publickey auth.
+	// It returns the upstream connection and an error.
+	PublicKeyCallback func(downconn ConnMetadata, key PublicKey, challengeCtx ChallengeContext) (*Upstream, error)
+
+	// KeyboardInteractiveCallback, if non-nil, that is called when the downstream requests a keyboard interactive auth.
+	// It returns the upstream connection and an error.
+	KeyboardInteractiveCallback func(downconn ConnMetadata, client KeyboardInteractiveChallenge, challengeCtx ChallengeContext) (*Upstream, error)
+
+	// UpstreamAuthFailureCallback, if non-nil, that is called when the upstream authentication fails.
+	UpstreamAuthFailureCallback func(downconn ConnMetadata, method string, err error, challengeCtx ChallengeContext)
+
+	// DownstreamBannerCallback, if non-nil, that is called after key exchange completed but before authentication.
+	// It returns the banner string to be sent to the client.
+	DownstreamBannerCallback func(downconn ConnMetadata, challengeCtx ChallengeContext) string
+
+	// UpstreamBannerCallback, if non-nil, that is called after upstream sends banner but before authentication.
+	// the default behavior is to send the banner to the downstream if not set.
+	UpstreamBannerCallback func(downconn ServerPreAuthConn, banner string, challengeCtx ChallengeContext) error
 }
 
 // AddHostKey adds a private key as a SSHPiper host key. If an existing host
@@ -289,6 +287,14 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 			}
 		}
 
+		if p.config.UpstreamBannerCallback != nil {
+
+			preauth, ok := downstream.(ServerPreAuthConn)
+			if ok {
+				return p.config.UpstreamBannerCallback(preauth, message, p.challengeCtx)
+			}
+		}
+
 		return p.downstream.SendAuthBanner(message)
 	}
 
@@ -353,8 +359,8 @@ func (p *PiperConn) keyboardInteractiveCallback(conn ConnMetadata, client Keyboa
 	return nil, p.authUpstream(conn, "keyboard-interactive", u)
 }
 
-func (p *PiperConn) bannerCallback(conn ConnMetadata) string {
-	return p.config.BannerCallback(conn, p.challengeCtx)
+func (p *PiperConn) downstreamBannerCallback(conn ConnMetadata) string {
+	return p.config.DownstreamBannerCallback(conn, p.challengeCtx)
 }
 
 func (p *PiperConn) updateAuthMethods(emptyerr error) error {
@@ -448,12 +454,8 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 		p.challengeCtx = ctx
 	}
 
-	if config.BannerCallback != nil {
-		p.authOnlyConfig.BannerCallback = p.bannerCallback
-	}
-
-	if config.PreAuthConnCallback != nil {
-		p.authOnlyConfig.PreAuthConnCallback = config.PreAuthConnCallback
+	if config.DownstreamBannerCallback != nil {
+		p.authOnlyConfig.BannerCallback = p.downstreamBannerCallback
 	}
 
 	if err := p.mapToUpstreamViaDownstreamAuth(); err != nil {
