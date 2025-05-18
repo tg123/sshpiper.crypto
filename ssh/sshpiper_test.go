@@ -507,7 +507,7 @@ func TestPiperUsernameNotChangedWithinSession(t *testing.T) {
 	}
 
 	c, err := dialPiper(&PiperConfig{
-		CreateChallengeContext: func(conn ConnMetadata) (ChallengeContext, error) {
+		CreateChallengeContext: func(conn ServerPreAuthConn) (ChallengeContext, error) {
 			return authlistCtx(map[string]bool{
 				"none":      true,
 				"password":  true,
@@ -600,7 +600,7 @@ func TestPiperChallengeContext(t *testing.T) {
 
 	c, err := dialPiper(&PiperConfig{
 
-		CreateChallengeContext: func(conn ConnMetadata) (ChallengeContext, error) {
+		CreateChallengeContext: func(conn ServerPreAuthConn) (ChallengeContext, error) {
 			return fakeChallengerContext{}, nil
 		},
 
