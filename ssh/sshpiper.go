@@ -527,18 +527,13 @@ func newDownstream(c net.Conn, config *ServerConfig) (*downstream, error) {
 	fullConf.SetDefaults()
 
 	if len(fullConf.PublicKeyAuthAlgorithms) == 0 {
-		fullConf.PublicKeyAuthAlgorithms = supportedPubKeyAuthAlgos
+		fullConf.PublicKeyAuthAlgorithms = defaultPubKeyAuthAlgos
 	} else {
 		for _, algo := range fullConf.PublicKeyAuthAlgorithms {
-			if !contains(supportedPubKeyAuthAlgos, algo) {
+			if !contains(SupportedAlgorithms().PublicKeyAuths, algo) && !contains(InsecureAlgorithms().PublicKeyAuths, algo) {
+				c.Close()
 				return nil, fmt.Errorf("ssh: unsupported public key authentication algorithm %s", algo)
 			}
-		}
-	}
-	// Check if the config contains any unsupported key exchanges
-	for _, kex := range fullConf.KeyExchanges {
-		if _, ok := serverForbiddenKexAlgos[kex]; ok {
-			return nil, fmt.Errorf("ssh: unsupported key exchange %s for server", kex)
 		}
 	}
 
