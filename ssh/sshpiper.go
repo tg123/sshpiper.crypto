@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 )
 
 type Upstream struct {
@@ -530,7 +531,7 @@ func newDownstream(c net.Conn, config *ServerConfig) (*downstream, error) {
 		fullConf.PublicKeyAuthAlgorithms = defaultPubKeyAuthAlgos
 	} else {
 		for _, algo := range fullConf.PublicKeyAuthAlgorithms {
-			if !contains(SupportedAlgorithms().PublicKeyAuths, algo) && !contains(InsecureAlgorithms().PublicKeyAuths, algo) {
+			if !slices.Contains(SupportedAlgorithms().PublicKeyAuths, algo) && !slices.Contains(InsecureAlgorithms().PublicKeyAuths, algo) {
 				c.Close()
 				return nil, fmt.Errorf("ssh: unsupported public key authentication algorithm %s", algo)
 			}
@@ -706,7 +707,7 @@ func (c *connection) clientAuthenticateReturnAllowed(config *ClientConfig) error
 			// success
 			return nil
 		} else if ok == authFailure {
-			if m := auth.method(); !contains(tried, m) {
+			if m := auth.method(); !slices.Contains(tried, m) {
 				tried = append(tried, m)
 			}
 		}
@@ -720,7 +721,7 @@ func (c *connection) clientAuthenticateReturnAllowed(config *ClientConfig) error
 	findNext:
 		for _, a := range config.Auth {
 			candidateMethod := a.method()
-			if contains(tried, candidateMethod) {
+			if slices.Contains(tried, candidateMethod) {
 				continue
 			}
 			for _, meth := range methods {
