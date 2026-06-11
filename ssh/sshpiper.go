@@ -124,6 +124,33 @@ type PiperConn struct {
 	authFailures int
 }
 
+// WriteUpstreamPacket writes a single SSH packet to the upstream server
+// out-of-band of the piping stream.
+//
+// Concurrency: writes to the upstream transport are NOT internally
+// synchronized. To avoid corrupting the upstream stream, this method
+// MUST be called from a context that does not race with the goroutine
+// that pipes downstream-bound packets to upstream — in practice, that
+// means calling it only from inside the downhook of WaitWithHook
+// (downhook reads from downstream and writes to upstream, so the same
+// goroutine naturally serializes both writes).
+//
+// A typical use is to inject channel-scoped messages such as "env"
+// channel-requests after observing a channel-open-confirmation. Callers
+// are responsible for constructing a valid SSH packet (e.g. via
+// ssh.Marshal on a typed message).
+func (p *PiperConn) WriteUpstreamPacket(pkt []byte) error {
+	return p.upstream.transport.writePacket(pkt)
+}
+
+// WriteDownstreamPacket writes a single SSH packet to the downstream
+// client out-of-band of the piping stream. The same concurrency
+// constraint as WriteUpstreamPacket applies, mirrored to the other
+// direction: call only from inside the uphook of WaitWithHook.
+func (p *PiperConn) WriteDownstreamPacket(pkt []byte) error {
+	return p.downstream.transport.writePacket(pkt)
+}
+
 // Wait blocks until the piped connection has shut down, and returns the
 // error causing the shutdown.
 func (p *PiperConn) Wait() error {
