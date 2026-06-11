@@ -6,10 +6,14 @@ package ssh
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
 func ExampleNewSSHPiperConn() {
@@ -912,4 +916,143 @@ func TestPiperPipeData(t *testing.T) {
 		t.Fatalf("Read differed from write, wrote: %v, read: %v", data, res)
 	}
 	// }}}
+}
+//
+// This proves that env injection can be implemented entirely in the daemon
+// using only:
+//   - the existing PipePacketHook / chain mechanism (unchanged), and
+//   - a single new fork-side primitive: PiperConn.WriteUpstreamPacket.
+func TestPiperEnvInjection(t *testing.T) {
+	envSeen := make(chan setenvRequest, 8)
+
+	envRecordingHandler := func(ch Channel, in <-chan *Request, t *testing.T) {
+		defer ch.Close()
+		go func() {
+			for req := range in {
+				switch req.Type {
+				case "env":
+					var er setenvRequest
+					if err := Unmarshal(req.Payload, &er); err == nil {
+						envSeen <- er
+					}
+					if req.WantReply {
+						_ = req.Reply(true, nil)
+					}
+				case "shell", "exec":
+					if req.WantReply {
+						_ = req.Reply(true, nil)
+					}
+				default:
+					if req.WantReply {
+						_ = req.Reply(false, nil)
+					}
+				}
+			}
+		}()
+		data, _ := io.ReadAll(ch)
+		_, _ = ch.Write(data)
+	}
+
+	// Daemon-side coordination state. The hooks here are plain single-
+	// packet PipePacketHooks (existing API). Injection happens out-of-band
+	// via WriteUpstreamPacket, which is safe to call from inside a hook.
+	var (
+		mu        sync.Mutex
+		serverIDs = map[uint32]bool{}
+		injected  = map[uint32]bool{}
+	)
+
+	c, err := dialPiper(&PiperConfig{
+		NoClientAuthCallback: func(conn ConnMetadata, ctx ChallengeContext) (*Upstream, error) {
+			s, err := dialUpstream(envRecordingHandler, &ServerConfig{NoClientAuth: true}, t)
+			return &Upstream{
+				Conn: s,
+				ClientConfig: ClientConfig{
+					HostKeyCallback: InsecureIgnoreHostKey(),
+				},
+			}, err
+		},
+	}, nil, func(p *PiperConn) {
+		// uphook (server->client): record server-side channel ids from
+		// channel-open-confirmation so the downhook knows what channel
+		// to address its synthetic env packets to.
+		uphook := func(pkt []byte) (PipePacketHookMethod, []byte, error) {
+			if len(pkt) >= 9 && pkt[0] == msgChannelOpenConfirm {
+				serverID := binary.BigEndian.Uint32(pkt[5:9])
+				mu.Lock()
+				serverIDs[serverID] = true
+				mu.Unlock()
+			}
+			return PipePacketHookTransform, pkt, nil
+		}
+		// downhook (client->server): on the first client-bound packet
+		// for a known server channel id, inject an env channel-request
+		// via WriteUpstreamPacket, then forward the original packet
+		// unchanged via the normal Transform return.
+		downhook := func(pkt []byte) (PipePacketHookMethod, []byte, error) {
+			if len(pkt) < 5 {
+				return PipePacketHookTransform, pkt, nil
+			}
+			chID := binary.BigEndian.Uint32(pkt[1:5])
+			mu.Lock()
+			known := serverIDs[chID]
+			already := injected[chID]
+			if known && !already {
+				injected[chID] = true
+			}
+			mu.Unlock()
+			if known && !already {
+				envPkt := Marshal(channelRequestMsg{
+					PeersID:             chID,
+					Request:             "env",
+					WantReply:           false,
+					RequestSpecificData: Marshal(setenvRequest{Name: "INJECTED_FROM_PIPER", Value: "slurm-job-42"}),
+				})
+				if err := p.WriteUpstreamPacket(envPkt); err != nil {
+					return PipePacketHookTransform, pkt, err
+				}
+			}
+			return PipePacketHookTransform, pkt, nil
+		}
+		_ = p.WaitWithHook(uphook, downhook)
+	}, t)
+	if err != nil {
+		t.Fatalf("dialPiper: %v", err)
+	}
+
+	sshc, chans, reqs, err := NewClientConn(c, "", &ClientConfig{
+		User:            "test",
+		Auth:            []AuthMethod{new(noneAuth)},
+		HostKeyCallback: InsecureIgnoreHostKey(),
+	})
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	conn := NewClient(sshc, chans, reqs)
+	defer conn.Close()
+
+	session, err := conn.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	stdin, _ := session.StdinPipe()
+	stdout, _ := session.StdoutPipe()
+	if err := session.Shell(); err != nil {
+		t.Fatalf("Shell: %v", err)
+	}
+	_, _ = stdin.Write([]byte("hi"))
+	stdin.Close()
+	_, _ = io.ReadAll(stdout)
+
+	select {
+	case got := <-envSeen:
+		if got.Name != "INJECTED_FROM_PIPER" || got.Value != "slurm-job-42" {
+			t.Fatalf("unexpected env: %+v", got)
+		}
+		t.Logf("upstream received injected env: %s=%s", got.Name, got.Value)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for upstream to see injected env request")
+	}
 }
