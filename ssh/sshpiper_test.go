@@ -479,7 +479,10 @@ func TestPiperUsernameNotChangedWithinSession(t *testing.T) {
 
 	dailDummyServer := func() (net.Conn, error) {
 		noneCalled := false
-		return dialUpstream(simpleEchoHandler, &ServerConfig{
+		// The none and password attempts are rejected upstream, and the
+		// piper closes an upstream it gave up on, so those connections end
+		// in a ServerAuthError on purpose.
+		return dialUpstreamAllowingAbandon(simpleEchoHandler, &ServerConfig{
 			PasswordCallback: func(conn ConnMetadata, password []byte) (*Permissions, error) {
 				if conn.User() != mappedname {
 					t.Errorf("bad mapped username")
