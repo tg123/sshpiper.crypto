@@ -332,6 +332,9 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	}
 
 	if err := u.clientAuthenticateReturnAllowed(config); err != nil {
+		// This upstream is not used any further.
+		u.transport.Close()
+
 		if p.config.UpstreamAuthFailureCallback != nil {
 			p.config.UpstreamAuthFailureCallback(downstream, method, err, p.challengeCtx)
 		}
@@ -342,6 +345,12 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	}
 
 	u.user = config.User
+	// A connection can log in upstream more than once before the downstream
+	// authentication finishes (for example one upstream per offered public
+	// key); only the last one is piped, so close the one it replaces.
+	if p.upstream != nil {
+		p.upstream.transport.Close()
+	}
 	p.upstream = u
 
 	return nil
@@ -487,6 +496,11 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 	}
 
 	if err := p.mapToUpstreamViaDownstreamAuth(); err != nil {
+		// The upstream may already be logged in (the downstream failed or went
+		// away afterwards); nobody else can close it.
+		if p.upstream != nil {
+			p.upstream.transport.Close()
+		}
 		return nil, err
 	}
 
