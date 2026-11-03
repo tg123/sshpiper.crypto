@@ -265,6 +265,20 @@ func (p *PiperConn) Close() {
 	p.downstream.transport.Close()
 }
 
+// closeUnpiped closes a transport that is never piped. Nobody reads from it,
+// so its readLoop may be blocked on a full incoming buffer, and Close waits
+// for readLoop to exit; drain it concurrently so Close cannot hang.
+func closeUnpiped(t packetConn) {
+	go func() {
+		for {
+			if _, err := t.readPacket(); err != nil {
+				return
+			}
+		}
+	}()
+	t.Close()
+}
+
 // UpstreamConnMeta returns the ConnMetadata of the piper and upstream
 func (p *PiperConn) UpstreamConnMeta() ConnMetadata {
 	return p.upstream
@@ -332,6 +346,9 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	}
 
 	if err := u.clientAuthenticateReturnAllowed(config); err != nil {
+		// This upstream is not used any further.
+		closeUnpiped(u.transport)
+
 		if p.config.UpstreamAuthFailureCallback != nil {
 			p.config.UpstreamAuthFailureCallback(downstream, method, err, p.challengeCtx)
 		}
@@ -342,6 +359,12 @@ func (p *PiperConn) authUpstream(downstream ConnMetadata, method string, upstrea
 	}
 
 	u.user = config.User
+	// A connection can log in upstream more than once before the downstream
+	// authentication finishes (for example one upstream per offered public
+	// key); only the last one is piped, so close the one it replaces.
+	if p.upstream != nil {
+		closeUnpiped(p.upstream.transport)
+	}
 	p.upstream = u
 
 	return nil
@@ -487,6 +510,11 @@ func NewSSHPiperConn(conn net.Conn, config *PiperConfig) (*PiperConn, error) {
 	}
 
 	if err := p.mapToUpstreamViaDownstreamAuth(); err != nil {
+		// The upstream may already be logged in (the downstream failed or went
+		// away afterwards); nobody else can close it.
+		if p.upstream != nil {
+			closeUnpiped(p.upstream.transport)
+		}
 		return nil, err
 	}
 
