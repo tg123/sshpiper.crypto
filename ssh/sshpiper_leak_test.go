@@ -259,3 +259,90 @@ func TestPiperClosesReplacedUpstream(t *testing.T) {
 		t.Error("the piped upstream must stay open")
 	}
 }
+
+// A replaced upstream that sent more packets than the transport buffers
+// (nobody reads it) must still be closed without hanging the piper.
+func TestPiperClosesReplacedUpstreamWithUnreadPackets(t *testing.T) {
+	var mu sync.Mutex
+	var ups []*trackedUpstream
+	firstFlooded := make(chan struct{})
+	c := dialLeakPiper(t, &PiperConfig{
+		PublicKeyCallback: func(conn ConnMetadata, key PublicKey, challengeCtx ChallengeContext) (*Upstream, error) {
+			mu.Lock()
+			first := len(ups) == 0
+			mu.Unlock()
+			if !first {
+				<-firstFlooded
+			}
+
+			cs, ss, err := netPipe()
+			if err != nil {
+				t.Error(err)
+				return nil, err
+			}
+			u := &trackedUpstream{loggedIn: make(chan struct{}), closed: make(chan struct{})}
+			mu.Lock()
+			ups = append(ups, u)
+			mu.Unlock()
+			cfg := &ServerConfig{NoClientAuth: true}
+			cfg.AddHostKey(testSigners["rsa"])
+			go func() {
+				defer close(u.closed)
+				defer ss.Close()
+				sc, chans, reqs, err := NewServerConn(ss, cfg)
+				if err != nil {
+					return
+				}
+				close(u.loggedIn)
+				go DiscardRequests(reqs)
+				go func() {
+					for nc := range chans {
+						_ = nc.Reject(Prohibited, "")
+					}
+				}()
+				if first {
+					for i := 0; i < 4*chanSize; i++ {
+						if _, _, err := sc.SendRequest("flood", false, nil); err != nil {
+							break
+						}
+					}
+					close(firstFlooded)
+				}
+				_ = sc.Wait()
+			}()
+			return &Upstream{Conn: cs, ClientConfig: ClientConfig{Auth: []AuthMethod{NoneAuth()}, HostKeyCallback: InsecureIgnoreHostKey()}}, nil
+		},
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		client, _, _, err := NewClientConn(c, "", &ClientConfig{
+			User:            "alice",
+			Auth:            []AuthMethod{queryThenSign{query: testSigners["ed25519"], sign: testSigners["ecdsa"]}},
+			HostKeyCallback: InsecureIgnoreHostKey(),
+		})
+		if client != nil {
+			client.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("client should authenticate with the second key: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		c.Close()
+		t.Fatal("piper hung closing a replaced upstream with unread packets")
+	}
+
+	mu.Lock()
+	list := append([]*trackedUpstream(nil), ups...)
+	mu.Unlock()
+	if len(list) != 2 {
+		t.Fatalf("want two upstream logins, got %d", len(list))
+	}
+	if !waitClosed(list[0], 2*time.Second) {
+		t.Error("replaced upstream left open")
+	}
+}
